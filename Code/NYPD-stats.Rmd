@@ -1,0 +1,415 @@
+---
+title: "Analysis of NYPD Historic Shooting Incidents using R"
+author: "Marco F"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+## Introduction
+
+This report conducts an analysis of the NYPD Shooting Incident Data (Historic). The primary goal is to explore patterns, trends, and characteristics of shooting incidents in New York City. We will follow a standard data analysis workflow:
+
+1.  **Importing Data**: Loading the dataset into R.
+2.  **Data Cleaning**: Preparing the data for analysis by handling missing values, correcting data types, and transforming variables.
+3.  **Visualizing Data**: Creating visualizations to understand distributions and relationships.
+4.  **Analyzing and Modeling**: Performing statistical analysis and building a predictive model.
+5.  **Bias Discussion**: Identifying potential biases in the data and analysis.
+6.  **Conclusion**: Summarizing key findings and limitations.
+
+The dataset is publicly available from NYC OpenData.
+
+## 1. Importing Data
+
+First, we load the necessary R packages and import the dataset. We'll use `tidyverse` for general data manipulation and visualization, `lubridate` for date-time operations, `skimr` for quick summaries, `rpart` and `rpart.plot` for decision tree modeling.
+
+```{r load-packages-data}
+#| label: load-packages-data
+#| message: false
+#| warning: false
+
+# Install packages if not already installed
+# install.packages(c("tidyverse", "lubridate", "skimr", "rpart", "rpart.plot", "kableExtra"))
+
+library(tidyverse)
+library(lubridate)
+library(skimr)
+library(rpart)
+library(rpart.plot)
+library(kableExtra)
+
+# URL for the NYPD Shooting Incident Data (Historic)
+data_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+# Load the dataset
+nypd_shootings_raw <- read_csv(data_url, show_col_types = FALSE)
+
+cat("Data loaded successfully.\n")
+cat(paste("Dataset dimensions:", paste(dim(nypd_shootings_raw), collapse = " x "), "\n\n"))
+cat("First few rows of raw data:\n")
+kable(head(nypd_shootings_raw))
+
+cat("\n\nSummary of raw data:\n")
+skim(nypd_shootings_raw) %>% 
+  select(skim_type, skim_variable, n_missing, complete_rate, character.empty, numeric.mean)
+```
+
+## 2. Data Cleaning
+
+Data cleaning is crucial for reliable analysis. This section involves:
+
+Standardizing column names.
+
+Converting data types (e.g., dates, times).
+
+Handling missing values.
+
+Feature engineering (e.g., extracting year, month, hour).
+
+```{r clean-data}
+#| label: clean-data
+#| message: false
+#| warning: false
+
+nypd_shootings_clean <- nypd_shootings_raw %>%
+  # Standardize column names (lowercase and replace spaces with underscores)
+  rename_with(tolower) %>%
+  rename_with(~gsub(" ", "_", .x)) 
+
+# Convert OCCUR_DATE to Date object
+nypd_shootings_clean <- nypd_shootings_clean %>%
+  mutate(occur_date = mdy(occur_date)) # Assumes MM/DD/YYYY format
+
+# Extract year, month, day_of_week
+nypd_shootings_clean <- nypd_shootings_clean %>%
+  mutate(
+    year = year(occur_date),
+    month = month(occur_date, label = TRUE, abbr = FALSE),
+    day_of_week = wday(occur_date, label = TRUE, abbr = FALSE)
+  )
+
+# Handle OCCUR_TIME - convert to hour
+nypd_shootings_clean <- nypd_shootings_clean %>%
+  mutate(
+    occur_hour = case_when(
+      !is.na(occur_time) ~ hour(hms(occur_time, quiet = TRUE)), # Try to parse HH:MM:SS
+      TRUE ~ NA_integer_ # If parsing fails or is NA, keep as NA
+    )
+  )
+
+# Impute missing occur_hour with the median hour
+median_hour <- median(nypd_shootings_clean$occur_hour, na.rm = TRUE)
+nypd_shootings_clean <- nypd_shootings_clean %>%
+  mutate(occur_hour = ifelse(is.na(occur_hour), median_hour, occur_hour))
+
+# Handle missing values for key categorical features by replacing with 'UNKNOWN'
+cols_to_fill_unknown <- c(
+  "boro", "perp_age_group", "perp_sex", "perp_race",
+  "vic_age_group", "vic_sex", "vic_race", 
+  "loc_of_occur_desc", "loc_classfctn_desc", "location_desc" 
+)
+
+# Ensure these columns exist before trying to mutate them
+existing_cols_to_fill <- intersect(cols_to_fill_unknown, names(nypd_shootings_clean))
+
+nypd_shootings_clean <- nypd_shootings_clean %>%
+  mutate(across(all_of(existing_cols_to_fill), ~replace_na(as.character(.x), "UNKNOWN"))) %>%
+  mutate(across(all_of(existing_cols_to_fill), ~ifelse(.x %in% c("", "(null)"), "UNKNOWN", .x)))
+
+
+# Convert STATISTICAL_MURDER_FLAG to a factor (0 for No, 1 for Yes)
+# The column might be logical (TRUE/FALSE) or character ("true"/"false")
+nypd_shootings_clean <- nypd_shootings_clean %>%
+  mutate(
+    statistical_murder_flag = case_when(
+      is.logical(statistical_murder_flag) ~ factor(statistical_murder_flag, levels = c(FALSE, TRUE), labels = c("No", "Yes")),
+      is.character(statistical_murder_flag) ~ factor(tolower(statistical_murder_flag), levels = c("false", "true"), labels = c("No", "Yes")),
+      TRUE ~ factor(NA, levels = c("No", "Yes")) # Handle other cases or if column doesn't exist as expected
+    ),
+    # If it was already T/F, ensure NAs are handled (e.g. replace with "No" or a specific category)
+    statistical_murder_flag = replace_na(statistical_murder_flag, "No") 
+  )
+
+
+# Drop columns not immediately useful for this analysis or with too many unique values for simple modeling
+# For example, specific coordinates if lat/long are used, or high-cardinality IDs.
+# `incident_key` is an ID, `lon_lat` is a point geometry.
+cols_to_drop <- c("x_coord_cd", "y_coord_cd", "lon_lat", "jurisdiction_code", "incident_key", "patch_code", "zip_code", "census_tract") # Added a few more common ones
+# Ensure columns exist before trying to drop
+existing_cols_to_drop <- intersect(cols_to_drop, names(nypd_shootings_clean))
+if (length(existing_cols_to_drop) > 0) {
+  nypd_shootings_clean <- nypd_shootings_clean %>%
+    select(-all_of(existing_cols_to_drop))
+}
+
+
+cat("\nCleaned data summary:\n")
+skim(nypd_shootings_clean) %>% 
+  select(skim_type, skim_variable, n_missing, complete_rate, character.empty, numeric.mean, factor.ordered, factor.n_unique)
+
+cat("\nFirst few rows of cleaned data:\n")
+kable(head(nypd_shootings_clean))
+
+cat("\nMissing values count per column after cleaning:\n")
+sapply(nypd_shootings_clean, function(x) sum(is.na(x))) %>% 
+  data.frame(missing_count = .) %>% 
+  rownames_to_column("column_name") %>%
+  filter(missing_count > 0) %>%
+  kable()
+```
+
+
+
+## 3. Visualizing Data
+Visualizations help in understanding trends, distributions, and relationships.
+
+### Visualization 1: Shooting Incidents Over Years
+
+This plot shows the trend of shooting incidents annually.
+
+```{r viz-yearly-trend}
+#| label: viz-yearly-trend
+#| fig-cap: "Number of Shooting Incidents per Year"
+#| message: false
+#| warning: false
+
+if (nrow(nypd_shootings_clean) > 0 && "year" %in% names(nypd_shootings_clean)) {
+  incidents_by_year <- nypd_shootings_clean %>%
+    filter(!is.na(year)) %>% # Ensure year is not NA
+    group_by(year) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    filter(year >= min(nypd_shootings_clean$year, na.rm=TRUE) & year <= max(nypd_shootings_clean$year, na.rm=TRUE)) # Filter out potential outlier years if any from parsing
+
+  ggplot(incidents_by_year, aes(x = year, y = count)) +
+    geom_line(color = "dodgerblue", size = 1) +
+    geom_point(color = "dodgerblue", size = 2) +
+    labs(
+      title = "Total Shooting Incidents per Year",
+      x = "Year",
+      y = "Number of Incidents"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_x_continuous(breaks = seq(min(incidents_by_year$year, na.rm=TRUE), max(incidents_by_year$year, na.rm=TRUE), by = 2)) # Adjust breaks as needed
+} else {
+  cat("Skipping yearly trend visualization as data is empty or 'year' column is missing.\n")
+}
+```
+
+Interpretation: This line chart illustrates the annual frequency of shooting incidents. It can reveal long-term trends, such as increases, decreases, or periods of stability in shooting occurrences.
+
+### Visualization 2: Shooting Incidents by Borough
+
+This bar chart shows the distribution of shooting incidents across NYC boroughs.
+
+```{r viz-boro-distribution}
+#| label: viz-boro-distribution
+#| fig-cap: "Distribution of Shooting Incidents by Borough"
+#| message: false
+#| warning: false
+
+if (nrow(nypd_shootings_clean) > 0 && "boro" %in% names(nypd_shootings_clean)) {
+  incidents_by_boro <- nypd_shootings_clean %>%
+    filter(!is.na(boro) & boro != "UNKNOWN") %>% # Exclude NA or UNKNOWN for a cleaner plot
+    group_by(boro) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    arrange(desc(count))
+
+  ggplot(incidents_by_boro, aes(x = reorder(boro, -count), y = count, fill = boro)) +
+    geom_bar(stat = "identity", show.legend = FALSE) +
+    geom_text(aes(label = count), vjust = -0.5, size = 3.5) +
+    labs(
+      title = "Shooting Incidents by Borough",
+      x = "Borough",
+      y = "Number of Incidents"
+    ) +
+    scale_fill_brewer(palette = "Set2") +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+} else {
+  cat("Skipping borough distribution visualization as data is empty or 'boro' column is missing.\n")
+}
+```
+
+Interpretation: This bar chart highlights which boroughs experience the highest and lowest numbers of shooting incidents, providing insight into the geographical distribution of these events.
+
+### Visualization 3: Incidents by Hour of Day
+
+This visualization explores the temporal pattern of shootings throughout the day.
+
+```{r viz-hour-distribution}
+#| label: viz-hour-distribution
+#| fig-cap: "Shooting Incidents by Hour of Day"
+#| message: false
+#| warning: false
+
+if (nrow(nypd_shootings_clean) > 0 && "occur_hour" %in% names(nypd_shootings_clean)) {
+  incidents_by_hour <- nypd_shootings_clean %>%
+    filter(!is.na(occur_hour)) %>%
+    group_by(occur_hour) %>%
+    summarise(count = n(), .groups = 'drop')
+
+  ggplot(incidents_by_hour, aes(x = occur_hour, y = count)) +
+    geom_col(fill = "coral") +
+    labs(
+      title = "Shooting Incidents by Hour of Day",
+      x = "Hour of Day (0-23)",
+      y = "Number of Incidents"
+    ) +
+    scale_x_continuous(breaks = seq(0, 23, by = 2)) +
+    theme_minimal(base_size = 12)
+} else {
+  cat("Skipping hour distribution visualization as data is empty or 'occur_hour' column is missing.\n")
+}
+```
+
+Interpretation: This plot shows if there are particular times of day when shooting incidents are more frequent.
+
+## 4. Analyzing and Modeling
+We will build a simple classification model to predict whether a shooting incident results in a statistical murder (statistical_murder_flag). We'll use a decision tree for interpretability.
+
+```{r model-prep}
+#| label: model-prep
+#| message: false
+#| warning: false
+
+if (nrow(nypd_shootings_clean) > 0 && "statistical_murder_flag" %in% names(nypd_shootings_clean)) {
+  # Select features for modeling
+  # Ensure all selected features exist in the dataframe
+  feature_candidates <- c(
+    "statistical_murder_flag", "boro", "occur_hour", "day_of_week", "month",
+    "perp_age_group", "perp_sex", "perp_race",
+    "vic_age_group", "vic_sex", "vic_race",
+    "loc_classfctn_desc" 
+  )
+  
+  model_features <- intersect(feature_candidates, names(nypd_shootings_clean))
+  
+  if (length(model_features) < 2 || !"statistical_murder_flag" %in% model_features) {
+    cat("Not enough features available for modeling or target variable is missing.\n")
+    modeling_possible <- FALSE
+  } else {
+    modeling_possible <- TRUE
+    
+    model_data <- nypd_shootings_clean %>%
+      select(all_of(model_features)) %>%
+      na.omit() # Remove rows with any NAs in selected features for simplicity
+    
+    # Convert character columns to factors for rpart
+    model_data <- model_data %>%
+      mutate(across(where(is.character), as.factor)) %>%
+      mutate(across(where(is.logical), as.factor)) # Ensure logicals are factors too
+    
+    # Ensure target variable is a factor with appropriate levels
+    if (!is.factor(model_data$statistical_murder_flag)) {
+        model_data$statistical_murder_flag <- factor(model_data$statistical_murder_flag)
+    }
+    
+    cat(paste("Dimensions of data for modeling:", paste(dim(model_data), collapse = " x "), "\n"))
+    
+    if (nrow(model_data) < 50 || n_distinct(model_data$statistical_murder_flag) < 2) {
+        cat("Not enough data or distinct classes in target variable after pre-processing for modeling.\n")
+        modeling_possible <- FALSE
+    } else {
+      # Check class balance
+      cat("\nClass distribution for 'statistical_murder_flag':\n")
+      print(table(model_data$statistical_murder_flag))
+    }
+  }
+} else {
+  cat("Skipping modeling as data is empty or target variable 'statistical_murder_flag' is missing.\n")
+  modeling_possible <- FALSE
+}
+```
+
+```{r model-train-eval}
+#| label: model-train-eval
+#| message: false
+#| warning: false
+#| fig-cap: "Decision Tree for Predicting Statistical Murder"
+
+if (exists("modeling_possible") && modeling_possible) {
+  set.seed(123) # for reproducibility
+  train_indices <- sample(1:nrow(model_data), 0.7 * nrow(model_data))
+  train_data <- model_data[train_indices, ]
+  test_data <- model_data[-train_indices, ]
+
+  cat(paste("Training data dimensions:", paste(dim(train_data), collapse = " x "), "\n"))
+  cat(paste("Test data dimensions:", paste(dim(test_data), collapse = " x "), "\n"))
+
+  # Build the decision tree model
+  # Using a simple cp value to avoid overly complex trees
+  tree_model <- rpart(
+    statistical_murder_flag ~ .,
+    data = train_data,
+    method = "class",
+    control = rpart.control(cp = 0.01, minsplit = 20) 
+  )
+
+  # Plot the decision tree
+  if (!is.null(tree_model) && nrow(tree_model$frame) > 1) {
+    rpart.plot(tree_model, extra = 104, box.palette = "GnBu", branch.lty = 3, shadow.col = "gray", nn = TRUE, roundint=FALSE)
+    title("Decision Tree: Predicting Statistical Murder", line = +3)
+  } else {
+    cat("Decision tree could not be built or is trivial (e.g., only a root node).\n")
+  }
+  
+  # Make predictions on the test set
+  predictions <- predict(tree_model, test_data, type = "class")
+
+  # Evaluate the model
+  if (length(predictions) == nrow(test_data)) {
+    confusion_matrix_result <- table(Actual = test_data$statistical_murder_flag, Predicted = predictions)
+    accuracy <- sum(diag(confusion_matrix_result)) / sum(confusion_matrix_result)
+
+    cat("\nConfusion Matrix:\n")
+    print(confusion_matrix_result)
+    cat(paste("\nAccuracy:", round(accuracy, 4), "\n"))
+    
+    # Further metrics if needed (precision, recall, F1)
+    # For "Yes" class (statistical murder)
+    if ("Yes" %in% colnames(confusion_matrix_result) && "Yes" %in% rownames(confusion_matrix_result)) {
+        tp <- confusion_matrix_result["Yes", "Yes"]
+        fp <- sum(confusion_matrix_result[rownames(confusion_matrix_result) != "Yes", "Yes"])
+        fn <- sum(confusion_matrix_result["Yes", colnames(confusion_matrix_result) != "Yes"])
+        
+        precision_yes <- tp / (tp + fp)
+        recall_yes <- tp / (tp + fn)
+        f1_score_yes <- 2 * (precision_yes * recall_yes) / (precision_yes + recall_yes)
+        
+        cat(paste("Precision (Yes):", round(precision_yes, 4), "\n"))
+        cat(paste("Recall (Yes):", round(recall_yes, 4), "\n"))
+        cat(paste("F1-Score (Yes):", round(f1_score_yes, 4), "\n"))
+    } else {
+        cat("Could not calculate detailed metrics for 'Yes' class (not present in predictions or actuals sufficiently).\n")
+    }
+
+  } else {
+    cat("Prediction length does not match test data length. Evaluation skipped.\n")
+  }
+} else {
+  cat("Modeling prerequisites not met. Skipping model training and evaluation.\n")
+}
+```
+
+Model Interpretation: The decision tree visualizes the rules used to classify incidents. The accuracy and confusion matrix indicate the model's performance. This model is illustrative; for real-world applications, more sophisticated modeling techniques, feature engineering, and hyperparameter tuning would be necessary. The class imbalance (fewer murders than non-murders) also needs careful handling.
+
+## 5 Personal Bias and Mitigation
+
+**My Personal Bias**: As an analyst examining crime data, I may carry assumptions about the relationships between demographics, geography, and violence that could influence interpretation. Additionally, focusing on statistical patterns might overlook the human impact and community context of these incidents.
+
+**Mitigation Strategies**: To address these biases, I have employed transparent methodology, avoided making causal claims about demographic relationships, focused on descriptive rather than prescriptive analysis, and explicitly acknowledged data limitations. The analysis emphasizes temporal and geographic patterns rather than making judgments about individual or group characteristics.
+
+## 6 Conclusion
+
+This analysis reveals several important patterns in NYC shooting incidents. The data shows a general decline in shooting incidents from 2011 to 2019, followed by a sharp increase in 2020, suggesting that broader social and economic factors significantly influence gun violence patterns. Geographic analysis indicates that Brooklyn and the Bronx experience the highest absolute numbers of incidents, while temporal analysis shows peak activity during evening and late-night hours.
+
+The analysis is subject to limitations, primarily stemming from potential data biases as discussed. Future work could involve more advanced modeling techniques, deeper investigation into the "UNKNOWN" categories, incorporating external
