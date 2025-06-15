@@ -3,15 +3,17 @@ title: "Analysis of NYPD Historic Shooting Incidents using R"
 author: "Marco F"
 date: "`r Sys.Date()`"
 output:
+  word_document:
+    toc: true
+  pdf_document:
+    toc: true
+    number_sections: true
   html_document:
     toc: true
     toc_float: true
     theme: flatly
     highlight: tango
     code_folding: show
-  pdf_document:
-    toc: true
-    number_sections: true
 ---
 
 ## Introduction
@@ -45,9 +47,10 @@ library(skimr)
 library(rpart)
 library(rpart.plot)
 library(kableExtra)
+library(broom)
 
-# URL for the NYPD Shooting Incident Data (Historic)
-data_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+# URL for the NYPD Shooting Incident Data (Historic) - Same as https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD
+data_url <- "https://raw.githubusercontent.com/marcofanti/Final-Project-1-Data-Science-NYPD-Shooting-Incident-Historic/refs/heads/main/Data/NYPD_Shooting_Incident_Data__Historic_.csv"
 
 # Load the dataset
 nypd_shootings_raw <- read_csv(data_url, show_col_types = FALSE)
@@ -150,7 +153,6 @@ if (length(existing_cols_to_drop) > 0) {
     select(-all_of(existing_cols_to_drop))
 }
 
-
 cat("\nCleaned data summary:\n")
 skim(nypd_shootings_clean) %>% 
   select(skim_type, skim_variable, n_missing, complete_rate, character.empty, numeric.mean, factor.ordered, factor.n_unique)
@@ -166,7 +168,29 @@ sapply(nypd_shootings_clean, function(x) sum(is.na(x))) %>%
   kable()
 ```
 
+The following variables should be treated as factors:
 
+- boro
+- perp_age_group
+- perp_sex
+- perp_race
+- vic_age_group
+- vic_sex
+- vic_race
+- statistical_murder_flag
+
+```{r convert_factors}
+
+nypd_shootings_clean$boro <- factor(nypd_shootings_clean$boro)
+nypd_shootings_clean$perp_age_group <- factor(nypd_shootings_clean$perp_age_group)
+nypd_shootings_clean$perp_sex <- factor(nypd_shootings_clean$perp_sex)
+nypd_shootings_clean$perp_race <- factor(nypd_shootings_clean$perp_race)
+nypd_shootings_clean$vic_age_group <- factor(nypd_shootings_clean$vic_age_group)
+nypd_shootings_clean$vic_sex <- factor(nypd_shootings_clean$vic_sex)
+nypd_shootings_clean$vic_race <- factor(nypd_shootings_clean$vic_race)
+nypd_shootings_clean$statistical_murder_flag <- factor(nypd_shootings_clean$statistical_murder_flag)
+
+```
 
 ## 3. Visualizing Data
 Visualizations help in understanding trends, distributions, and relationships.
@@ -241,7 +265,64 @@ if (nrow(nypd_shootings_clean) > 0 && "boro" %in% names(nypd_shootings_clean)) {
 
 Interpretation: This bar chart highlights which boroughs experience the highest and lowest numbers of shooting incidents, providing insight into the geographical distribution of these events.
 
-### Visualization 3: Incidents by Hour of Day
+### Visualization 3: Shooting Incidents by Borough Per 100K Residents
+
+This bar chart shows the distribution of shooting incidents across NYC boroughs per 100K residents.
+
+```{r viz-boro-distribution-per-100k}
+#| label: viz-boro-distribution-per-100k
+#| fig-cap: "Distribution of Shooting Incidents by Borough per 100K Residents"
+#| message: false
+#| warning: false
+
+# Load population data for 2020 - Same as "https://data.cityofnewyork.us/resource/xywu-7bv9.csv")
+pop_url <- "https://raw.githubusercontent.com/marcofanti/Final-Project-1-Data-Science-NYPD-Shooting-Incident-Historic/refs/heads/main/Data/xywu-7bv9.csv"
+
+population <- read_csv(pop_url, show_col_types = FALSE)
+
+population <- population %>%
+  # Standardize column names (lowercase and replace spaces with underscores)
+  rename_with(tolower) %>%
+  rename_with(~gsub(" ", "_", .x)) 
+
+population_2020 <- population %>%
+        filter(borough != "NYC Total") %>%
+        select(borough, `2020`) %>%
+        rename(boro = borough, Population = `2020`) %>%
+        mutate(boro = toupper(boro))
+
+
+if (nrow(nypd_shootings_clean) > 0 && "boro" %in% names(nypd_shootings_clean)) {
+  incidents_by_boro <- nypd_shootings_clean %>%
+    filter(!is.na(boro) & boro != "UNKNOWN") %>% # Exclude NA or UNKNOWN for a cleaner plot
+    group_by(boro) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    arrange(desc(count))
+
+  # Join with population data
+  incidents_population <- incidents_by_boro %>%
+        left_join(population_2020, by = "boro") %>%
+        mutate(Rate_Per_100k = (count / Population) * 100000)
+
+
+  ggplot(incidents_population, aes(x = reorder(boro, -count), y = Rate_Per_100k, fill = boro)) +
+    geom_bar(stat = "identity", show.legend = FALSE) +
+    geom_text(aes(label = round(Rate_Per_100k, 1)), vjust = -0.5, size = 3.5) +
+    labs(
+      title = "Shooting Incidents by Borough (Per 100K Residents)",
+      x = "Borough",
+      y = "Number of Incidents"
+    ) +
+    scale_fill_brewer(palette = "Set2") +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+} else {
+  cat("Skipping borough distribution visualization as data is empty or 'boro' column is missing.\n")
+}
+```
+Interpretation: This bar chart highlights which boroughs experience the highest and lowest numbers of shooting incidents per 100K residents. If we look at the incidence rate per 100,000 residents, and compare to the previous visualization, the Bronx has the highest number of shootings per capita, and Manhattan overtakes Queens in this metric.
+
+### Visualization 4: Incidents by Hour of Day
 
 This visualization explores the temporal pattern of shootings throughout the day.
 
@@ -274,7 +355,9 @@ if (nrow(nypd_shootings_clean) > 0 && "occur_hour" %in% names(nypd_shootings_cle
 Interpretation: This plot shows if there are particular times of day when shooting incidents are more frequent.
 
 ## 4. Analyzing and Modeling
-We will build a simple classification model to predict whether a shooting incident results in a statistical murder (statistical_murder_flag). We'll use a decision tree for interpretability.
+## Logistic Regression Analysis of Fatal Shooting Likelihood
+
+We model whether an incident was fatal (`statistical_murder_flag`) based on shooting incident's borough (`boro`), time of occurrence (`occur_hour`), victim's age group, sex, and race.
 
 ```{r model-prep}
 #| label: model-prep
@@ -285,122 +368,76 @@ if (nrow(nypd_shootings_clean) > 0 && "statistical_murder_flag" %in% names(nypd_
   # Select features for modeling
   # Ensure all selected features exist in the dataframe
   feature_candidates <- c(
-    "statistical_murder_flag", "boro", "occur_hour", "day_of_week", "month",
-    "perp_age_group", "perp_sex", "perp_race",
-    "vic_age_group", "vic_sex", "vic_race",
-    "loc_classfctn_desc" 
+    "boro", "occur_hour", "vic_age_group", "vic_sex", "vic_race"
   )
   
   model_features <- intersect(feature_candidates, names(nypd_shootings_clean))
+    
+  model_data <- nypd_shootings_clean %>%
+    select(all_of(model_features)) %>%
+    na.omit() # Remove rows with any NAs in selected features for simplicity
   
-  if (length(model_features) < 2 || !"statistical_murder_flag" %in% model_features) {
-    cat("Not enough features available for modeling or target variable is missing.\n")
-    modeling_possible <- FALSE
-  } else {
-    modeling_possible <- TRUE
-    
-    model_data <- nypd_shootings_clean %>%
-      select(all_of(model_features)) %>%
-      na.omit() # Remove rows with any NAs in selected features for simplicity
-    
-    # Convert character columns to factors for rpart
-    model_data <- model_data %>%
-      mutate(across(where(is.character), as.factor)) %>%
-      mutate(across(where(is.logical), as.factor)) # Ensure logicals are factors too
-    
-    # Ensure target variable is a factor with appropriate levels
-    if (!is.factor(model_data$statistical_murder_flag)) {
-        model_data$statistical_murder_flag <- factor(model_data$statistical_murder_flag)
-    }
-    
+  # Convert character columns to factors for rpart
+  model_data <- model_data %>%
+    mutate(across(where(is.character), as.factor)) %>%
+    mutate(across(where(is.logical), as.factor)) # Ensure logicals are factors too
+  
     cat(paste("Dimensions of data for modeling:", paste(dim(model_data), collapse = " x "), "\n"))
-    
-    if (nrow(model_data) < 50 || n_distinct(model_data$statistical_murder_flag) < 2) {
-        cat("Not enough data or distinct classes in target variable after pre-processing for modeling.\n")
-        modeling_possible <- FALSE
-    } else {
-      # Check class balance
-      cat("\nClass distribution for 'statistical_murder_flag':\n")
-      print(table(model_data$statistical_murder_flag))
-    }
-  }
-} else {
-  cat("Skipping modeling as data is empty or target variable 'statistical_murder_flag' is missing.\n")
-  modeling_possible <- FALSE
 }
 ```
 
-```{r model-train-eval}
-#| label: model-train-eval
+```{r model-eval}
+#| label: model-eval
 #| message: false
 #| warning: false
 #| fig-cap: "Decision Tree for Predicting Statistical Murder"
+glm_model <- glm(statistical_murder_flag ~ boro + occur_hour + vic_age_group + vic_sex + vic_race, 
+                 data = nypd_shootings_clean, family = 'binomial')
 
-if (exists("modeling_possible") && modeling_possible) {
-  set.seed(123) # for reproducibility
-  train_indices <- sample(1:nrow(model_data), 0.7 * nrow(model_data))
-  train_data <- model_data[train_indices, ]
-  test_data <- model_data[-train_indices, ]
-
-  cat(paste("Training data dimensions:", paste(dim(train_data), collapse = " x "), "\n"))
-  cat(paste("Test data dimensions:", paste(dim(test_data), collapse = " x "), "\n"))
-
-  # Build the decision tree model
-  # Using a simple cp value to avoid overly complex trees
-  tree_model <- rpart(
-    statistical_murder_flag ~ .,
-    data = train_data,
-    method = "class",
-    control = rpart.control(cp = 0.01, minsplit = 20) 
-  )
-
-  # Plot the decision tree
-  if (!is.null(tree_model) && nrow(tree_model$frame) > 1) {
-    rpart.plot(tree_model, extra = 104, box.palette = "GnBu", branch.lty = 3, shadow.col = "gray", nn = TRUE, roundint=FALSE)
-    title("Decision Tree: Predicting Statistical Murder", line = +3)
-  } else {
-    cat("Decision tree could not be built or is trivial (e.g., only a root node).\n")
-  }
-  
-  # Make predictions on the test set
-  predictions <- predict(tree_model, test_data, type = "class")
-
-  # Evaluate the model
-  if (length(predictions) == nrow(test_data)) {
-    confusion_matrix_result <- table(Actual = test_data$statistical_murder_flag, Predicted = predictions)
-    accuracy <- sum(diag(confusion_matrix_result)) / sum(confusion_matrix_result)
-
-    cat("\nConfusion Matrix:\n")
-    print(confusion_matrix_result)
-    cat(paste("\nAccuracy:", round(accuracy, 4), "\n"))
-    
-    # Further metrics if needed (precision, recall, F1)
-    # For "Yes" class (statistical murder)
-    if ("Yes" %in% colnames(confusion_matrix_result) && "Yes" %in% rownames(confusion_matrix_result)) {
-        tp <- confusion_matrix_result["Yes", "Yes"]
-        fp <- sum(confusion_matrix_result[rownames(confusion_matrix_result) != "Yes", "Yes"])
-        fn <- sum(confusion_matrix_result["Yes", colnames(confusion_matrix_result) != "Yes"])
-        
-        precision_yes <- tp / (tp + fp)
-        recall_yes <- tp / (tp + fn)
-        f1_score_yes <- 2 * (precision_yes * recall_yes) / (precision_yes + recall_yes)
-        
-        cat(paste("Precision (Yes):", round(precision_yes, 4), "\n"))
-        cat(paste("Recall (Yes):", round(recall_yes, 4), "\n"))
-        cat(paste("F1-Score (Yes):", round(f1_score_yes, 4), "\n"))
-    } else {
-        cat("Could not calculate detailed metrics for 'Yes' class (not present in predictions or actuals sufficiently).\n")
-    }
-
-  } else {
-    cat("Prediction length does not match test data length. Evaluation skipped.\n")
-  }
-} else {
-  cat("Modeling prerequisites not met. Skipping model training and evaluation.\n")
-}
+summary(glm_model) 
 ```
 
-Model Interpretation: The decision tree visualizes the rules used to classify incidents. The accuracy and confusion matrix indicate the model's performance. This model is illustrative; for real-world applications, more sophisticated modeling techniques, feature engineering, and hyperparameter tuning would be necessary. The class imbalance (fewer murders than non-murders) also needs careful handling.
+
+---
+
+## Generalized Linear Model (GLM) Output Explanation
+
+This logistic regression model predicts the likelihood of a shooting incident resulting in murder (`statistical_murder_flag`) based on several predictors: borough (`boro`), time of occurrence (`occur_hour`), victim's age group, sex, and race.
+
+### Key Findings
+
+#### **Statistically Significant Predictors**
+
+* **`boroMANHATTAN`**: Incidents in Manhattan are significantly less likely to result in murder compared to the baseline borough (likely the Bronx), with a small but statistically significant negative effect (p = 0.0175).
+* **`vic_age_group18-24`, `25-44`, `45-64`, `65+`, `UNKNOWN`**: All these age groups show statistically significant increased odds of the incident being a murder compared to the baseline (likely under 18), with the effect increasing with age.
+* **`vic_age_group18-24`**: OR approximately exp(0.26) → slight increase.
+* **`vic_age_group25-44` and `45-64`**: Higher estimates suggest a stronger relationship.
+* **`vic_age_group65+`**: The strongest effect among the age groups (Estimate approximately 0.99).
+* **`vic_age_groupUNKNOWN`**: Also significant, though likely due to data irregularities or small counts.
+
+#### **Non-Significant Predictors**
+
+* **Other boroughs (Brooklyn, Queens, Staten Island)**: No significant difference from the baseline.
+* **`occur_hour`**: No significant relationship between time of incident and likelihood of murder.
+* **`vic_sex`**: Neither male (`M`) nor unknown (`U`) differs significantly from the baseline (`F`).
+* **`vic_race`**: All race variables have extremely high standard errors and are not statistically significant. These inflated standard errors suggest **multicollinearity** or **complete/quasi-complete separation** in the data, leading to unreliable coefficient estimates.
+
+### Model Fit
+
+* **Null deviance**: 29251 → deviance of model with no predictors.
+* **Residual deviance**: 28943 → deviance after including predictors.
+* **AIC**: 28983 → a model selection metric; lower is better.
+* **Model improvement** is minimal (small drop in deviance), suggesting limited predictive power from the included variables.
+
+### Notes
+
+* The very large standard errors and coefficients for race categories imply instability in the model, possibly due to sparse data or perfect prediction for certain groups.
+* Only a few variables meaningfully contribute to predicting murder outcomes in the dataset, most notably certain age groups and location in Manhattan.
+
+---
+
+
+
 
 ## 5 Personal Bias and Mitigation
 
