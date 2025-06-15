@@ -141,6 +141,25 @@ nypd_shootings_clean <- nypd_shootings_clean %>%
     statistical_murder_flag = replace_na(statistical_murder_flag, "No") 
   )
 
+# The following variables should be treated as factors:
+# 
+# - boro
+# - perp_age_group
+# - perp_sex
+# - perp_race
+# - vic_age_group
+# - vic_sex
+# - vic_race
+# - statistical_murder_flag
+
+nypd_shootings_clean$boro <- factor(nypd_shootings_clean$boro)
+nypd_shootings_clean$perp_age_group <- factor(nypd_shootings_clean$perp_age_group)
+nypd_shootings_clean$perp_sex <- factor(nypd_shootings_clean$perp_sex)
+nypd_shootings_clean$perp_race <- factor(nypd_shootings_clean$perp_race)
+nypd_shootings_clean$vic_age_group <- factor(nypd_shootings_clean$vic_age_group)
+nypd_shootings_clean$vic_sex <- factor(nypd_shootings_clean$vic_sex)
+nypd_shootings_clean$vic_race <- factor(nypd_shootings_clean$vic_race)
+nypd_shootings_clean$statistical_murder_flag <- factor(nypd_shootings_clean$statistical_murder_flag)
 
 # Drop columns not immediately useful for this analysis or with too many unique values for simple modeling
 # For example, specific coordinates if lat/long are used, or high-cardinality IDs.
@@ -166,30 +185,6 @@ sapply(nypd_shootings_clean, function(x) sum(is.na(x))) %>%
   rownames_to_column("column_name") %>%
   filter(missing_count > 0) %>%
   kable()
-```
-
-The following variables should be treated as factors:
-
-- boro
-- perp_age_group
-- perp_sex
-- perp_race
-- vic_age_group
-- vic_sex
-- vic_race
-- statistical_murder_flag
-
-```{r convert_factors}
-
-nypd_shootings_clean$boro <- factor(nypd_shootings_clean$boro)
-nypd_shootings_clean$perp_age_group <- factor(nypd_shootings_clean$perp_age_group)
-nypd_shootings_clean$perp_sex <- factor(nypd_shootings_clean$perp_sex)
-nypd_shootings_clean$perp_race <- factor(nypd_shootings_clean$perp_race)
-nypd_shootings_clean$vic_age_group <- factor(nypd_shootings_clean$vic_age_group)
-nypd_shootings_clean$vic_sex <- factor(nypd_shootings_clean$vic_sex)
-nypd_shootings_clean$vic_race <- factor(nypd_shootings_clean$vic_race)
-nypd_shootings_clean$statistical_murder_flag <- factor(nypd_shootings_clean$statistical_murder_flag)
-
 ```
 
 ## 3. Visualizing Data
@@ -355,7 +350,7 @@ if (nrow(nypd_shootings_clean) > 0 && "occur_hour" %in% names(nypd_shootings_cle
 Interpretation: This plot shows if there are particular times of day when shooting incidents are more frequent.
 
 ## 4. Analyzing and Modeling
-## Logistic Regression Analysis of Fatal Shooting Likelihood
+### Logistic Regression Analysis of Fatal Shooting Likelihood
 
 We model whether an incident was fatal (`statistical_murder_flag`) based on shooting incident's borough (`boro`), time of occurrence (`occur_hour`), victim's age group, sex, and race.
 
