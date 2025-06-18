@@ -20,6 +20,7 @@ This project presents a comprehensive analysis of the NYPD Shooting Incident Dat
 - **Duration**: Maximum 10 minutes
 - **Content**: Professional presentation of data analysis findings
 - **Audience**: Academic/Professional
+- **Video URL**: [https://drive.google.com/file/d/1C20QBnxS8dhj52XhyUUVohrbIla82cUr/view?usp=sharing](https://drive.google.com/file/d/1C20QBnxS8dhj52XhyUUVohrbIla82cUr/view?usp=sharing)
 
 ## Presentation Requirements
 

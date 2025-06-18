@@ -3,17 +3,17 @@ title: "Analysis of NYPD Historic Shooting Incidents using R"
 author: "Marco F"
 date: "`r Sys.Date()`"
 output:
-  word_document:
-    toc: true
-  pdf_document:
-    toc: true
-    number_sections: true
   html_document:
     toc: true
     toc_float: true
     theme: flatly
     highlight: tango
     code_folding: show
+  pdf_document:
+    toc: true
+    number_sections: true
+  word_document:
+    toc: true
 ---
 
 ## Introduction
@@ -445,3 +445,10 @@ This logistic regression model predicts the likelihood of a shooting incident re
 This analysis reveals several important patterns in NYC shooting incidents. The data shows a general decline in shooting incidents from 2011 to 2019, followed by a sharp increase in 2020, suggesting that broader social and economic factors significantly influence gun violence patterns. Geographic analysis indicates that Brooklyn and the Bronx experience the highest absolute numbers of incidents, while temporal analysis shows peak activity during evening and late-night hours.
 
 The analysis is subject to limitations, primarily stemming from potential data biases as discussed. Future work could involve more advanced modeling techniques, deeper investigation into the "UNKNOWN" categories, incorporating external
+
+## 7 Session Info
+
+```{r session-info}
+# Display R session information
+sessionInfo()
+```
